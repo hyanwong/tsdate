@@ -1090,7 +1090,7 @@ class TestOutsideEdgesOrdering(unittest.TestCase):
 
     def test_simulated_inferred_outside_traversal(self):
         ts = msprime.simulate(500, Ne=10000, length=5e4, mutation_rate=1e-8,
-                              recombination_rate=1e-8)
+                              recombination_rate=1e-8, random_seed=12)
         sample_data = tsinfer.SampleData.from_tree_sequence(ts, use_times=False)
         inferred_ts = tsinfer.infer(sample_data)
         self.edges_ordering(inferred_ts, "outside_pass")
@@ -1182,7 +1182,7 @@ class TestBuildPriorGrid(unittest.TestCase):
     Test tsdate.build_prior_grid() works as expected
     """
     def test_bad_timepoints(self):
-        ts = msprime.simulate(2)
+        ts = msprime.simulate(2, random_seed=123)
         for bad in [-1, np.array([1]), np.array([-1, 2, 3]), np.array([1, 1, 1]),
                     "foobar"]:
             self.assertRaises(ValueError, tsdate.build_prior_grid, ts, timepoints=bad)
@@ -1190,7 +1190,7 @@ class TestBuildPriorGrid(unittest.TestCase):
             self.assertRaises(TypeError, tsdate.build_prior_grid, ts, timepoints=bad)
 
     def test_bad_prior_distr(self):
-        ts = msprime.simulate(2)
+        ts = msprime.simulate(2, random_seed=12)
         self.assertRaises(ValueError, tsdate.build_prior_grid, ts,
                           prior_distribution="foobar")
 
