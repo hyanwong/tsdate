@@ -24,21 +24,21 @@
 Test cases for the python API for tsdate.
 """
 import unittest
-import os
 import collections
 
 import numpy as np
 import scipy
-import tskit  # NOQA
 import msprime
+import tsinfer
 
 import tsdate
-from tsdate.date import (SpansBySamples, PriorParams,
-                         ConditionalCoalescentTimes, fill_prior, Likelihoods,
-                         LogLikelihoods, LogLikelihoodsStreaming, InOutAlgorithms,
-                         NodeGridValues, gamma_approx, constrain_ages_topo)  # NOQA
+from tsdate.base import NodeGridValues
+from tsdate.prior import (SpansBySamples, PriorParams, ConditionalCoalescentTimes,
+                          fill_priors, gamma_approx)
+from tsdate.date import (Likelihoods, LogLikelihoods, LogLikelihoodsStreaming,
+                         InOutAlgorithms, constrain_ages_topo)
 
-import utility_functions
+from tests import utility_functions
 
 
 class TestBasicFunctions(unittest.TestCase):
@@ -84,7 +84,8 @@ class TestNodeTipWeights(unittest.TestCase):
         for tree in ts.trees():
             for n in tree.nodes():
                 if not tree.is_sample(n):
-                    nonsample_nodes[n] += tree.span
+                    # do not count a span of a node where there are no sample descendants
+                    nonsample_nodes[n] += (tree.span if tree.num_samples(n) > 0 else 0)
         self.assertEqual(set(span_data.nodes_to_date), set(nonsample_nodes.keys()))
         for id, span in nonsample_nodes.items():
             self.assertAlmostEqual(span, span_data.node_spans[id])
@@ -94,7 +95,9 @@ class TestNodeTipWeights(unittest.TestCase):
                 self.assertTrue(0 <= focal_node < ts.num_nodes)
                 wt += np.sum(weights['weight'])
                 self.assertLessEqual(max(weights['descendant_tips']), ts.num_samples)
-            self.assertAlmostEqual(wt, 1.0)
+            if not np.isnan(wt):
+                # Dangling nodes will have wt=nan
+                self.assertAlmostEqual(wt, 1.0)
         return span_data
 
     def test_one_tree_n2(self):
@@ -146,8 +149,12 @@ class TestNodeTipWeights(unittest.TestCase):
         ts = utility_functions.two_tree_ts().keep_intervals(
             [(0, 0.2)], simplify=False)
         n = ts.num_samples
-        # Here we have no reference in the trees to node 6
-        self.assertRaises(ValueError, SpansBySamples, ts)
+        # Here we have no reference in the trees to node 5
+        with self.assertLogs(level="WARNING") as log:
+            SpansBySamples(ts)
+            self.assertGreater(len(log.output), 0)
+            self.assertIn("5", log.output[-1])  # Should mention the node number
+            self.assertIn("simplify", log.output[-1])  # Should advise to simplify
         ts = ts.simplify()
         span_data = self.verify_weights(ts)
         # Root on (deleted) R tree is missing
@@ -161,11 +168,14 @@ class TestNodeTipWeights(unittest.TestCase):
         ts = utility_functions.single_tree_ts_with_unary()
         n = ts.num_samples
         span_data = self.verify_weights(ts)
-        self.assertEqual(span_data.lookup_weight(3, n, 2), 1.0)
-        self.assertEqual(span_data.lookup_weight(4, n, 2), 0.5)
-        self.assertEqual(span_data.lookup_weight(4, n, 3), 0.5)
-        self.assertEqual(span_data.lookup_weight(5, n, 1), 0.5)
+        self.assertEqual(span_data.lookup_weight(7, n, 3), 1.0)
+        self.assertEqual(span_data.lookup_weight(6, n, 1), 0.5)
+        self.assertEqual(span_data.lookup_weight(6, n, 3), 0.5)
+        self.assertEqual(span_data.lookup_weight(5, n, 2), 0.5)
         self.assertEqual(span_data.lookup_weight(5, n, 3), 0.5)
+        self.assertEqual(span_data.lookup_weight(4, n, 2), 0.75)
+        self.assertEqual(span_data.lookup_weight(4, n, 3), 0.25)
+        self.assertEqual(span_data.lookup_weight(3, n, 2), 1.0)
 
     def test_polytomy_tree(self):
         ts = utility_functions.polytomy_tree_ts()
@@ -177,6 +187,13 @@ class TestNodeTipWeights(unittest.TestCase):
                               mutation_rate=5, random_seed=123)
         self.assertGreater(ts.num_trees, 1)
         self.verify_weights(ts)
+
+    def test_dangling_nodes_warn(self):
+        ts = utility_functions.single_tree_ts_n3_dangling()
+        with self.assertLogs(level="WARNING") as log:
+            self.verify_weights(ts)
+            self.assertGreater(len(log.output), 0)
+            self.assertIn("dangling", log.output[0])
 
     @unittest.skip("YAN to fix")
     def test_truncated_nodes(self):
@@ -191,37 +208,37 @@ class TestNodeTipWeights(unittest.TestCase):
 
 class TestMakePrior(unittest.TestCase):
     # We only test make_prior() on single trees
-    def verify_prior(self, ts, prior_distr):
+    def verify_priors(self, ts, prior_distr):
         # Check prior contains all possible tips
         priors = ConditionalCoalescentTimes(None, prior_distr=prior_distr)
         priors.add(ts.num_samples)
-        prior_df = priors[ts.num_samples]
-        self.assertEqual(prior_df.shape[0], ts.num_samples + 1)
-        return(prior_df)
+        priors_df = priors[ts.num_samples]
+        self.assertEqual(priors_df.shape[0], ts.num_samples + 1)
+        return(priors_df)
 
     def test_one_tree_n2(self):
         ts = utility_functions.single_tree_ts_n2()
-        prior = self.verify_prior(ts, 'gamma')
+        priors = self.verify_priors(ts, 'gamma')
         self.assertTrue(np.allclose(
-            prior[2], PriorParams(alpha=1., beta=1., mean=1., var=1.)))
-        prior = self.verify_prior(ts, 'lognorm')
+            priors[2], PriorParams(alpha=1., beta=1., mean=1., var=1.)))
+        priors = self.verify_priors(ts, 'lognorm')
         self.assertTrue(np.allclose(
-            prior[2], PriorParams(alpha=-0.34657359, beta=0.69314718, mean=1., var=1.)))
+            priors[2], PriorParams(alpha=-0.34657359, beta=0.69314718, mean=1., var=1.)))
 
     def test_one_tree_n3(self):
         ts = utility_functions.single_tree_ts_n3()
         prior2mv = {'mean': 1/3, 'var': 1/9}
         prior3mv = {'mean': 1+1/3, 'var': 1+1/9}
-        prior = self.verify_prior(ts, 'lognorm')
+        priors = self.verify_priors(ts, 'lognorm')
         self.assertTrue(np.allclose(
-            prior[2], PriorParams(alpha=-1.44518588, beta=0.69314718, **prior2mv)))
+            priors[2], PriorParams(alpha=-1.44518588, beta=0.69314718, **prior2mv)))
         self.assertTrue(np.allclose(
-            prior[3], PriorParams(alpha=0.04492816, beta=0.48550782, **prior3mv)))
-        prior = self.verify_prior(ts, 'gamma')
+            priors[3], PriorParams(alpha=0.04492816, beta=0.48550782, **prior3mv)))
+        priors = self.verify_priors(ts, 'gamma')
         self.assertTrue(np.allclose(
-            prior[2], PriorParams(alpha=1., beta=3., **prior2mv)))
+            priors[2], PriorParams(alpha=1., beta=3., **prior2mv)))
         self.assertTrue(np.allclose(
-            prior[3], PriorParams(alpha=1.6, beta=1.2, **prior3mv)))
+            priors[3], PriorParams(alpha=1.6, beta=1.2, **prior3mv)))
 
     def test_one_tree_n4(self):
         ts = utility_functions.single_tree_ts_n4()
@@ -230,34 +247,34 @@ class TestMakePrior(unittest.TestCase):
         prior3mv = {'mean': np.nan, 'var': np.nan}
         prior4mv = {'mean': np.nan, 'var': np.nan}
 
-        prior = self.verify_prior(ts, 'lognorm')
+        priors = self.verify_priors(ts, 'lognorm')
         self.assertTrue(np.allclose(
-            prior[2], PriorParams(alpha=np.nan, beta=np.nan, **prior2mv)))
+            priors[2], PriorParams(alpha=np.nan, beta=np.nan, **prior2mv)))
         self.assertTrue(np.allclose(
-            prior[3], PriorParams(alpha=np.nan, beta=np.nan, **prior3mv)))
+            priors[3], PriorParams(alpha=np.nan, beta=np.nan, **prior3mv)))
         self.assertTrue(np.allclose(
-            prior[4], PriorParams(alpha=np.nan, beta=np.nan, **prior4mv)))
+            priors[4], PriorParams(alpha=np.nan, beta=np.nan, **prior4mv)))
 
-        prior = self.verify_prior(ts, 'gamma')
+        priors = self.verify_priors(ts, 'gamma')
         self.assertTrue(np.allclose(
-            prior[2], PriorParams(alpha=np.nan, beta=np.nan, **prior2mv)))
+            priors[2], PriorParams(alpha=np.nan, beta=np.nan, **prior2mv)))
         self.assertTrue(np.allclose(
-            prior[3], PriorParams(alpha=np.nan, beta=np.nan, **prior3mv)))
+            priors[3], PriorParams(alpha=np.nan, beta=np.nan, **prior3mv)))
         self.assertTrue(np.allclose(
-            prior[4], PriorParams(alpha=np.nan, beta=np.nan, **prior4mv)))
+            priors[4], PriorParams(alpha=np.nan, beta=np.nan, **prior4mv)))
 
     def test_polytomy_tree(self):
         ts = utility_functions.polytomy_tree_ts()
         self.skipTest("Fill in values instead of np.nan")
         prior3mv = {'mean': np.nan, 'var': np.nan}
 
-        prior = self.verify_prior(ts, 'lognorm')
+        priors = self.verify_priors(ts, 'lognorm')
         self.assertTrue(np.allclose(
-            prior[3], PriorParams(alpha=np.nan, beta=np.nan, **prior3mv)))
+            priors[3], PriorParams(alpha=np.nan, beta=np.nan, **prior3mv)))
 
-        prior = self.verify_prior(ts, 'gamma')
+        priors = self.verify_prior(ts, 'gamma')
         self.assertTrue(np.allclose(
-            prior[3], PriorParams(alpha=np.nan, beta=np.nan, **prior3mv)))
+            priors[3], PriorParams(alpha=np.nan, beta=np.nan, **prior3mv)))
 
     def test_two_tree_ts(self):
         ts = utility_functions.two_tree_ts()
@@ -265,17 +282,17 @@ class TestMakePrior(unittest.TestCase):
         prior2mv = {'mean': np.nan, 'var': np.nan}
         prior3mv = {'mean': np.nan, 'var': np.nan}
 
-        prior = self.verify_prior(ts, 'lognorm')
+        priors = self.verify_priors(ts, 'lognorm')
         self.assertTrue(np.allclose(
-            prior[2], PriorParams(alpha=np.nan, beta=np.nan, **prior2mv)))
+            priors[2], PriorParams(alpha=np.nan, beta=np.nan, **prior2mv)))
         self.assertTrue(np.allclose(
-            prior[3], PriorParams(alpha=np.nan, beta=np.nan, **prior3mv)))
+            priors[3], PriorParams(alpha=np.nan, beta=np.nan, **prior3mv)))
 
-        prior = self.verify_prior(ts, 'gamma')
+        priors = self.verify_priors(ts, 'gamma')
         self.assertTrue(np.allclose(
-            prior[2], PriorParams(alpha=np.nan, beta=np.nan, **prior2mv)))
+            priors[2], PriorParams(alpha=np.nan, beta=np.nan, **prior2mv)))
         self.assertTrue(np.allclose(
-            prior[3], PriorParams(alpha=np.nan, beta=np.nan, **prior3mv)))
+            priors[3], PriorParams(alpha=np.nan, beta=np.nan, **prior3mv)))
 
     def test_single_tree_ts_with_unary(self):
         ts = utility_functions.single_tree_ts_with_unary()
@@ -283,17 +300,17 @@ class TestMakePrior(unittest.TestCase):
         prior2mv = {'mean': np.nan, 'var': np.nan}
         prior3mv = {'mean': np.nan, 'var': np.nan}
 
-        prior = self.verify_prior(ts, 'lognorm')
+        priors = self.verify_priors(ts, 'lognorm')
         self.assertTrue(np.allclose(
-            prior[2], PriorParams(alpha=np.nan, beta=np.nan, **prior2mv)))
+            priors[2], PriorParams(alpha=np.nan, beta=np.nan, **prior2mv)))
         self.assertTrue(np.allclose(
-            prior[3], PriorParams(alpha=np.nan, beta=np.nan, **prior3mv)))
+            priors[3], PriorParams(alpha=np.nan, beta=np.nan, **prior3mv)))
 
-        prior = self.verify_prior(ts, 'gamma')
+        priors = self.verify_priors(ts, 'gamma')
         self.assertTrue(np.allclose(
-            prior[2], PriorParams(alpha=1., beta=3., **prior2mv)))
+            priors[2], PriorParams(alpha=1., beta=3., **prior2mv)))
         self.assertTrue(np.allclose(
-            prior[3], PriorParams(alpha=1.6, beta=1.2, **prior3mv)))
+            priors[3], PriorParams(alpha=1.6, beta=1.2, **prior3mv)))
 
     def test_two_tree_mutation_ts(self):
         ts = utility_functions.two_tree_mutation_ts()
@@ -301,42 +318,17 @@ class TestMakePrior(unittest.TestCase):
         prior2mv = {'mean': np.nan, 'var': np.nan}
         prior3mv = {'mean': np.nan, 'var': np.nan}
 
-        prior = self.verify_prior(ts, 'lognorm')
+        priors = self.verify_priors(ts, 'lognorm')
         self.assertTrue(np.allclose(
-            prior[2], PriorParams(alpha=np.nan, beta=np.nan, **prior2mv)))
+            priors[2], PriorParams(alpha=np.nan, beta=np.nan, **prior2mv)))
         self.assertTrue(np.allclose(
-            prior[3], PriorParams(alpha=np.nan, beta=np.nan, **prior3mv)))
+            priors[3], PriorParams(alpha=np.nan, beta=np.nan, **prior3mv)))
 
-        prior = self.verify_prior(ts, 'gamma')
+        priors = self.verify_priors(ts, 'gamma')
         self.assertTrue(np.allclose(
-            prior[2], PriorParams(alpha=1., beta=3., **prior2mv)))
+            priors[2], PriorParams(alpha=1., beta=3., **prior2mv)))
         self.assertTrue(np.allclose(
-            prior[3], PriorParams(alpha=1.6, beta=1.2, **prior3mv)))
-
-    def test_precalculated_prior(self):
-        # Force approx prior with a tiny n
-        priors_approx10 = ConditionalCoalescentTimes(10)
-        priors_approx10.add(10)
-        # Check we have created the prior file
-        self.assertTrue(
-            os.path.isfile(ConditionalCoalescentTimes.precalc_approx_fn(10)))
-        priors_approxNone = ConditionalCoalescentTimes(None)
-        priors_approxNone.add(10)
-        self.assertTrue(
-            np.allclose(priors_approx10[10], priors_approxNone[10], equal_nan=True))
-        # Test when using a bigger n that we're using the precalculated version
-        priors_approx10.add(100)
-        self.assertEquals(priors_approx10[100].shape[0], 100 + 1)
-        priors_approxNone.add(100, approximate=False)
-        self.assertEquals(priors_approxNone[100].shape[0], 100 + 1)
-        self.assertFalse(
-            np.allclose(priors_approx10[100], priors_approxNone[100], equal_nan=True))
-
-        priors_approx10.clear_precalculated_prior()
-        self.assertFalse(
-            os.path.isfile(ConditionalCoalescentTimes.precalc_approx_fn(10)),
-            "The file `{}` should have been deleted, but has not been.\
-             Please delete it")
+            priors[3], PriorParams(alpha=1.6, beta=1.2, **prior3mv)))
 
 
 class TestMixturePrior(unittest.TestCase):
@@ -346,82 +338,87 @@ class TestMixturePrior(unittest.TestCase):
         span_data = SpansBySamples(ts)
         priors = ConditionalCoalescentTimes(None, prior_distr=prior_distr)
         priors.add(ts.num_samples, approximate=False)
-        mixture_prior = priors.get_mixture_prior_params(span_data)
-        return(mixture_prior)
+        mixture_priors = priors.get_mixture_prior_params(span_data)
+        return(mixture_priors)
 
     def test_one_tree_n2(self):
         ts = utility_functions.single_tree_ts_n2()
-        mixture_prior = self.get_mixture_prior_params(ts, 'gamma')
+        mixture_priors = self.get_mixture_prior_params(ts, 'gamma')
         self.assertTrue(
-            np.allclose(mixture_prior[2, self.alpha_beta], [1., 1.]))
-        mixture_prior = self.get_mixture_prior_params(ts, 'lognorm')
+            np.allclose(mixture_priors[2, self.alpha_beta], [1., 1.]))
+        mixture_priors = self.get_mixture_prior_params(ts, 'lognorm')
         self.assertTrue(
-            np.allclose(mixture_prior[2,  self.alpha_beta], [-0.34657359, 0.69314718]))
+            np.allclose(mixture_priors[2,  self.alpha_beta], [-0.34657359, 0.69314718]))
 
     def test_one_tree_n3(self):
         ts = utility_functions.single_tree_ts_n3()
-        mixture_prior = self.get_mixture_prior_params(ts, 'gamma')
+        mixture_priors = self.get_mixture_prior_params(ts, 'gamma')
         self.assertTrue(
-            np.allclose(mixture_prior[3, self.alpha_beta], [1., 3.]))
+            np.allclose(mixture_priors[3, self.alpha_beta], [1., 3.]))
         self.assertTrue(
-            np.allclose(mixture_prior[4, self.alpha_beta], [1.6, 1.2]))
-        mixture_prior = self.get_mixture_prior_params(ts, 'lognorm')
+            np.allclose(mixture_priors[4, self.alpha_beta], [1.6, 1.2]))
+        mixture_priors = self.get_mixture_prior_params(ts, 'lognorm')
         self.assertTrue(
-            np.allclose(mixture_prior[3, self.alpha_beta], [-1.44518588, 0.69314718]))
+            np.allclose(mixture_priors[3, self.alpha_beta], [-1.44518588, 0.69314718]))
         self.assertTrue(
-            np.allclose(mixture_prior[4, self.alpha_beta], [0.04492816, 0.48550782]))
+            np.allclose(mixture_priors[4, self.alpha_beta], [0.04492816, 0.48550782]))
 
     def test_one_tree_n4(self):
         ts = utility_functions.single_tree_ts_n4()
-        mixture_prior = self.get_mixture_prior_params(ts, 'gamma')
+        mixture_priors = self.get_mixture_prior_params(ts, 'gamma')
         self.assertTrue(
-            np.allclose(mixture_prior[4, self.alpha_beta], [0.81818182, 3.27272727]))
+            np.allclose(mixture_priors[4, self.alpha_beta], [0.81818182, 3.27272727]))
         self.assertTrue(
-            np.allclose(mixture_prior[5, self.alpha_beta], [1.8, 3.6]))
+            np.allclose(mixture_priors[5, self.alpha_beta], [1.8, 3.6]))
         self.assertTrue(
-            np.allclose(mixture_prior[6, self.alpha_beta], [1.97560976, 1.31707317]))
+            np.allclose(mixture_priors[6, self.alpha_beta], [1.97560976, 1.31707317]))
 
     def test_polytomy_tree(self):
         ts = utility_functions.polytomy_tree_ts()
-        mixture_prior = self.get_mixture_prior_params(ts, 'gamma')
+        mixture_priors = self.get_mixture_prior_params(ts, 'gamma')
         self.assertTrue(
-            np.allclose(mixture_prior[3, self.alpha_beta], [1.6, 1.2]))
+            np.allclose(mixture_priors[3, self.alpha_beta], [1.6, 1.2]))
 
     def test_two_trees(self):
         ts = utility_functions.two_tree_ts()
-        mixture_prior = self.get_mixture_prior_params(ts, 'gamma')
+        mixture_priors = self.get_mixture_prior_params(ts, 'gamma')
         self.assertTrue(
-            np.allclose(mixture_prior[3, self.alpha_beta], [1., 3.]))
+            np.allclose(mixture_priors[3, self.alpha_beta], [1., 3.]))
         # Node 4 should be a mixture between 2 and 3 tips
         self.assertTrue(
-            np.allclose(mixture_prior[4, self.alpha_beta], [0.60377, 1.13207]))
+            np.allclose(mixture_priors[4, self.alpha_beta], [0.60377, 1.13207]))
         self.assertTrue(
-            np.allclose(mixture_prior[5, self.alpha_beta], [1.6, 1.2]))
+            np.allclose(mixture_priors[5, self.alpha_beta], [1.6, 1.2]))
 
     def test_single_tree_ts_with_unary(self):
         ts = utility_functions.single_tree_ts_with_unary()
-        mixture_prior = self.get_mixture_prior_params(ts, 'gamma')
+        mixture_priors = self.get_mixture_prior_params(ts, 'gamma')
+        # Root is a 3 tip prior
         self.assertTrue(
-            np.allclose(mixture_prior[3, self.alpha_beta], [1., 3.]))
-        # Node 4 should be a mixture between 2 and 3 tips
+            np.allclose(mixture_priors[7, self.alpha_beta], [1.6, 1.2]))
+        # Node 6 should be a 50:50 mixture between 1 and 3 tips
         self.assertTrue(
-            np.allclose(mixture_prior[4, self.alpha_beta], [0.80645, 0.96774]))
-        # Node 5 should be a mixture between 1 and 3 tips
+            np.allclose(mixture_priors[6, self.alpha_beta], [0.44444, 0.66666]))
+        # Node 5 should be a 50:50 mixture of 2 and 3 tips
         self.assertTrue(
-            np.allclose(mixture_prior[5, self.alpha_beta], [0.44444, 0.66666]))
+            np.allclose(mixture_priors[5, self.alpha_beta], [0.80645, 0.96774]))
+        # Node 4 should be a 75:25 mixture of 2 and 3 tips
         self.assertTrue(
-            np.allclose(mixture_prior[6, self.alpha_beta], [1.6, 1.2]))
+            np.allclose(mixture_priors[4, self.alpha_beta], [0.62025, 1.06329]))
+        # Node 3 is a 2 tip prior
+        self.assertTrue(
+            np.allclose(mixture_priors[3, self.alpha_beta], [1., 3.]))
 
     def test_two_tree_mutation_ts(self):
         ts = utility_functions.two_tree_mutation_ts()
-        mixture_prior = self.get_mixture_prior_params(ts, 'gamma')
+        mixture_priors = self.get_mixture_prior_params(ts, 'gamma')
         self.assertTrue(
-            np.allclose(mixture_prior[3, self.alpha_beta], [1., 3.]))
+            np.allclose(mixture_priors[3, self.alpha_beta], [1., 3.]))
         # Node 4 should be a mixture between 2 and 3 tips
         self.assertTrue(
-            np.allclose(mixture_prior[4, self.alpha_beta], [0.60377, 1.13207]))
+            np.allclose(mixture_priors[4, self.alpha_beta], [0.60377, 1.13207]))
         self.assertTrue(
-            np.allclose(mixture_prior[5, self.alpha_beta], [1.6, 1.2]))
+            np.allclose(mixture_priors[5, self.alpha_beta], [1.6, 1.2]))
 
 
 class TestPriorVals(unittest.TestCase):
@@ -430,73 +427,65 @@ class TestPriorVals(unittest.TestCase):
         priors = ConditionalCoalescentTimes(None, prior_distr=prior_distr)
         priors.add(ts.num_samples, approximate=False)
         grid = np.linspace(0, 3, 3)
-        mixture_prior = priors.get_mixture_prior_params(span_data)
-        nodes_to_date = span_data.nodes_to_date
-        prior_vals = fill_prior(mixture_prior, grid, ts, nodes_to_date,
-                                prior_distr=prior_distr)
+        mixture_priors = priors.get_mixture_prior_params(span_data)
+        prior_vals = fill_priors(mixture_priors, grid, ts, prior_distr=prior_distr)
         return prior_vals
 
     def test_one_tree_n2(self):
         ts = utility_functions.single_tree_ts_n2()
         prior_vals = self.verify_prior_vals(ts, 'gamma')
-        self.assertTrue(np.allclose(prior_vals[2],
-                        np.array([0, 1, 0.22313016])))
+        self.assertTrue(np.allclose(prior_vals[2], [0, 1, 0.22313016]))
 
     def test_one_tree_n3(self):
         ts = utility_functions.single_tree_ts_n3()
         prior_vals = self.verify_prior_vals(ts, 'gamma')
-        self.assertTrue(np.allclose(prior_vals[3],
-                        np.array([0, 1, 0.011109])))
-        self.assertTrue(np.allclose(prior_vals[4],
-                        np.array([0, 1, 0.3973851])))
+        self.assertTrue(np.allclose(prior_vals[3], [0, 1, 0.011109]))
+        self.assertTrue(np.allclose(prior_vals[4], [0, 1, 0.3973851]))
 
     def test_one_tree_n4(self):
         ts = utility_functions.single_tree_ts_n4()
         prior_vals = self.verify_prior_vals(ts, 'gamma')
-        self.assertTrue(np.allclose(prior_vals[4],
-                        np.array([0, 1, 0.00467134])))
-        self.assertTrue(np.allclose(prior_vals[5],
-                        np.array([0, 1, 0.02167806])))
-        self.assertTrue(np.allclose(prior_vals[6],
-                        np.array([0, 1, 0.52637529])))
+        self.assertTrue(np.allclose(prior_vals[4], [0, 1, 0.00467134]))
+        self.assertTrue(np.allclose(prior_vals[5], [0, 1, 0.02167806]))
+        self.assertTrue(np.allclose(prior_vals[6], [0, 1, 0.52637529]))
 
     def test_polytomy_tree(self):
         ts = utility_functions.polytomy_tree_ts()
         prior_vals = self.verify_prior_vals(ts, 'gamma')
-        self.assertTrue(np.allclose(prior_vals[3],
-                        np.array([0, 1, 0.3973851])))
+        self.assertTrue(np.allclose(prior_vals[3], [0, 1, 0.3973851]))
 
     def test_two_tree_ts(self):
         ts = utility_functions.two_tree_ts()
         prior_vals = self.verify_prior_vals(ts, 'gamma')
-        self.assertTrue(np.allclose(prior_vals[3],
-                        np.array([0, 1, 0.011109])))
-        self.assertTrue(np.allclose(prior_vals[4],
-                        np.array([0, 1, 0.080002])))
-        self.assertTrue(np.allclose(prior_vals[5],
-                        np.array([0, 1, 0.3973851])))
+        self.assertTrue(np.allclose(prior_vals[3], [0, 1, 0.011109]))
+        self.assertTrue(np.allclose(prior_vals[4], [0, 1, 0.080002]))
+        self.assertTrue(np.allclose(prior_vals[5], [0, 1, 0.3973851]))
 
     def test_tree_with_unary_nodes(self):
         ts = utility_functions.single_tree_ts_with_unary()
         prior_vals = self.verify_prior_vals(ts, 'gamma')
-        self.assertTrue(np.allclose(prior_vals[3],
-                        np.array([0, 1, 0.011109])))
-        self.assertTrue(np.allclose(prior_vals[4],
-                        np.array([0, 1, 0.16443276])))
-        self.assertTrue(np.allclose(prior_vals[5],
-                        np.array([0, 1, 0.11312131])))
-        self.assertTrue(np.allclose(prior_vals[6],
-                        np.array([0, 1, 0.3973851])))
+        self.assertTrue(np.allclose(prior_vals[7], [0, 1, 0.397385]))
+        self.assertTrue(np.allclose(prior_vals[6], [0, 1, 0.113122]))
+        self.assertTrue(np.allclose(prior_vals[5], [0, 1, 0.164433]))
+        self.assertTrue(np.allclose(prior_vals[4], [0, 1, 0.093389]))
+        self.assertTrue(np.allclose(prior_vals[3], [0, 1, 0.011109]))
 
 
 class TestLikelihoodClass(unittest.TestCase):
-    def poisson(self, l, x):
+    def poisson(self, l, x, normalize=True):
         ll = np.exp(-l) * l ** x / scipy.special.factorial(x)
-        return ll / np.max(ll)
+        if normalize:
+            return ll / np.max(ll)
+        else:
+            return ll
 
-    def log_poisson(self, l, x):
-        ll = np.log(np.exp(-l) * l ** x / scipy.special.factorial(x))
-        return ll - np.max(ll)
+    def log_poisson(self, l, x, normalize=True):
+        with np.errstate(divide='ignore'):
+            ll = np.log(np.exp(-l) * l ** x / scipy.special.factorial(x))
+        if normalize:
+            return ll - np.max(ll)
+        else:
+            return ll
 
     def test_get_mut_edges(self):
         ts = utility_functions.two_tree_mutation_ts()
@@ -564,32 +553,40 @@ class TestLikelihoodClass(unittest.TestCase):
                     self.assertAlmostEqual(lower_tri[5], expected_lik_dt[0])
 
     def test_precalc_lik_upper_multithread(self):
-        ts = utility_functions.two_tree_ts()
+        ts = utility_functions.two_tree_mutation_ts()
         grid = np.array([0, 1, 2])
         eps = 0
         theta = 1
-        lik = Likelihoods(ts, grid, theta, eps)
-        num_muts = 0
-        dt = grid
-        for num_threads in (1, 2):
-            n_internal_edges = 0
-            lik.precalculate_mutation_likelihoods(num_threads=num_threads)
-            for edge in ts.edges():
-                if not ts.node(edge.child).is_sample():
-                    n_internal_edges += 1  # only two internal edges in this tree
-                    self.assertLessEqual(n_internal_edges, 2)
-                    span = edge.right - edge.left
-                    expected_lik_dt = self.poisson(dt * (theta / 2 * span), num_muts)
-                    upper_tri = lik.get_mut_lik_upper_tri(edge)
+        for L, pois in [(Likelihoods, self.poisson), (LogLikelihoods, self.log_poisson)]:
+            for normalize in (True, False):
+                lik = L(ts, grid, theta, eps, normalize=normalize)
+                dt = grid
+                for num_threads in (None, 1, 2):
+                    n_internal_edges = 0
+                    lik.precalculate_mutation_likelihoods(num_threads=num_threads)
+                    for edge in ts.edges():
+                        if not ts.node(edge.child).is_sample():
+                            n_internal_edges += 1  # only two internal edges in this tree
+                            self.assertLessEqual(n_internal_edges, 2)
+                            if edge.parent == 4 and edge.child == 3:
+                                num_muts = 2
+                            elif edge.parent == 5 and edge.child == 4:
+                                num_muts = 0
+                            else:
+                                self.fail("Unexpected edge")
+                            span = edge.right - edge.left
+                            expected_lik_dt = pois(
+                                dt * (theta / 2 * span), num_muts, normalize=normalize)
+                            upper_tri = lik.get_mut_lik_upper_tri(edge)
 
-                    self.assertAlmostEqual(upper_tri[0], expected_lik_dt[0])
-                    self.assertAlmostEqual(upper_tri[1], expected_lik_dt[1])
-                    self.assertAlmostEqual(upper_tri[2], expected_lik_dt[2])
+                            self.assertAlmostEqual(upper_tri[0], expected_lik_dt[0])
+                            self.assertAlmostEqual(upper_tri[1], expected_lik_dt[1])
+                            self.assertAlmostEqual(upper_tri[2], expected_lik_dt[2])
 
-                    self.assertAlmostEqual(upper_tri[3], expected_lik_dt[0])
-                    self.assertAlmostEqual(upper_tri[4], expected_lik_dt[1])
+                            self.assertAlmostEqual(upper_tri[3], expected_lik_dt[0])
+                            self.assertAlmostEqual(upper_tri[4], expected_lik_dt[1])
 
-                    self.assertAlmostEqual(upper_tri[5], expected_lik_dt[0])
+                            self.assertAlmostEqual(upper_tri[5], expected_lik_dt[0])
 
     def test_tri_functions(self):
         ts = utility_functions.two_tree_mutation_ts()
@@ -772,19 +769,36 @@ class TestNodeGridValuesClass(unittest.TestCase):
             orig, 0, np.array([[1, 2], [4, 5]]))
 
 
+class TestAlgorithmClass(unittest.TestCase):
+    def test_nonmatching_prior_vs_lik_timepoints(self):
+        ts = utility_functions.single_tree_ts_n3()
+        timepoints1 = np.array([0, 1.2, 2])
+        timepoints2 = np.array([0, 1.1, 2])
+        priors = tsdate.build_prior_grid(ts, timepoints1)
+        lls = Likelihoods(ts, timepoints2)
+        self.assertRaisesRegexp(ValueError, "timepoints", InOutAlgorithms, priors, lls)
+
+    def test_nonmatching_prior_vs_lik_fixednodes(self):
+        ts1 = utility_functions.single_tree_ts_n3()
+        ts2 = utility_functions.single_tree_ts_n3_dangling()
+        timepoints = np.array([0, 1.2, 2])
+        priors = tsdate.build_prior_grid(ts1, timepoints)
+        lls = Likelihoods(ts2, priors.timepoints)
+        self.assertRaisesRegexp(ValueError, "fixed", InOutAlgorithms, priors, lls)
+
+
 class TestInsideAlgorithm(unittest.TestCase):
     def run_inside_algorithm(self, ts, prior_distr, normalize=True):
-        prior = tsdate.build_prior_grid(ts, timepoints=np.array([0, 1.2, 2]),
-                                        approximate_prior=False,
-                                        prior_distribution=prior_distr)
+        priors = tsdate.build_prior_grid(ts, timepoints=np.array([0, 1.2, 2]),
+                                         approximate_priors=False,
+                                         prior_distribution=prior_distr)
         theta = 1
-        rho = None
         eps = 1e-6
-        lls = Likelihoods(ts, prior.timepoints, theta, eps)
+        lls = Likelihoods(ts, priors.timepoints, theta, eps=eps)
         lls.precalculate_mutation_likelihoods()
-        algo = InOutAlgorithms(ts, prior, lls)
-        algo.inside_pass(theta, rho, normalize=normalize)
-        return algo, prior
+        algo = InOutAlgorithms(priors, lls)
+        algo.inside_pass(normalize=normalize)
+        return algo, priors
 
     def test_one_tree_n2(self):
         ts = utility_functions.single_tree_ts_n2()
@@ -811,46 +825,46 @@ class TestInsideAlgorithm(unittest.TestCase):
 
     def test_two_tree_ts(self):
         ts = utility_functions.two_tree_ts()
-        algo, prior = self.run_inside_algorithm(ts, 'gamma', normalize=False)
-        # Prior[3][1] * Ll_(0->3)(1.2 - 0 + eps) ** 2
-        node3_t1 = prior[3][1] * scipy.stats.poisson.pmf(
+        algo, priors = self.run_inside_algorithm(ts, 'gamma', normalize=False)
+        # priors[3][1] * Ll_(0->3)(1.2 - 0 + eps) ** 2
+        node3_t1 = priors[3][1] * scipy.stats.poisson.pmf(
             0, (1.2 + 1e-6) * 0.5 * 0.2) ** 2
-        # Prior[3][2] * sum(Ll_(0->3)(2 - t + eps))
-        node3_t2 = prior[3][2] * scipy.stats.poisson.pmf(
+        # priors[3][2] * sum(Ll_(0->3)(2 - t + eps))
+        node3_t2 = priors[3][2] * scipy.stats.poisson.pmf(
             0, (2 + 1e-6) * 0.5 * 0.2) ** 2
         self.assertTrue(np.allclose(algo.inside[3],
                                     np.array([0, node3_t1, node3_t2])))
         """
-        Prior[4][1] * (Ll_(2->4)(1.2 - 0 + eps) * (Ll_(1->4)(1.2 - 0 + eps)) *
+        priors[4][1] * (Ll_(2->4)(1.2 - 0 + eps) * (Ll_(1->4)(1.2 - 0 + eps)) *
         (Ll_(3->4)(1.2-1.2+eps) * node3_t1)
         """
-        node4_t1 = prior[4][1] * (scipy.stats.poisson.pmf(
+        node4_t1 = priors[4][1] * (scipy.stats.poisson.pmf(
             0, (1.2 + 1e-6) * 0.5 * 1) * scipy.stats.poisson.pmf(
             0, (1.2 + 1e-6) * 0.5 * 0.8) *
             ((scipy.stats.poisson.pmf(0, (1e-6) * 0.5 * 0.2) * node3_t1)))
         """
-        Prior[4][2] * (Ll_(2->4)(2 - 0 + eps) * Ll_(1->4)(2 - 0 + eps) *
+        priors[4][2] * (Ll_(2->4)(2 - 0 + eps) * Ll_(1->4)(2 - 0 + eps) *
         (sum_(t'<2)(Ll_(3->4)(2-t'+eps) * node3_t))
         """
-        node4_t2 = prior[4][2] * (scipy.stats.poisson.pmf(
+        node4_t2 = priors[4][2] * (scipy.stats.poisson.pmf(
             0, (2 + 1e-6) * 0.5 * 1) * scipy.stats.poisson.pmf(
             0, (2 + 1e-6) * 0.5 * 0.8) * ((scipy.stats.poisson.pmf(
                 0, (0.8 + 1e-6) * 0.5 * 0.2) * node3_t1) +
             (scipy.stats.poisson.pmf(0, (1e-6 + 1e-6) * 0.5 * 0.2) * node3_t2)))
         self.assertTrue(np.allclose(algo.inside[4], np.array([0, node4_t1, node4_t2])))
         """
-        Prior[5][1] * (Ll_(4->5)(1.2 - 1.2 + eps) * (node3_t ** 0.8)) *
+        priors[5][1] * (Ll_(4->5)(1.2 - 1.2 + eps) * (node3_t ** 0.8)) *
         (Ll_(0->5)(1.2 - 0 + eps) * 1)
         raising node4_t to 0.8 is geometric scaling
         """
-        node5_t1 = prior[5][1] * (scipy.stats.poisson.pmf(
+        node5_t1 = priors[5][1] * (scipy.stats.poisson.pmf(
             0, (1e-6) * 0.5 * 0.8) * (node4_t1 ** 0.8)) * (scipy.stats.poisson.pmf(
                 0, (1.2 + 1e-6) * 0.5 * 0.8))
         """
-        Prior[5][2] * (sum_(t'<1.2)(Ll_(4->5)(1.2 - 0 + eps) * (node3_t ** 0.8)) *
+        prior[5][2] * (sum_(t'<1.2)(Ll_(4->5)(1.2 - 0 + eps) * (node3_t ** 0.8)) *
         (Ll_(0->5)(1.2 - 0 + eps) * 1)
         """
-        node5_t2 = prior[5][2] * ((scipy.stats.poisson.pmf(
+        node5_t2 = priors[5][2] * ((scipy.stats.poisson.pmf(
             0, (0.8 + 1e-6) * 0.5 * 0.8) * (node4_t1 ** 0.8)) +
             (scipy.stats.poisson.pmf(0, (1e-6 + 1e-6) * 0.5 * 0.8) *
                 (node4_t2 ** 0.8))) * (scipy.stats.poisson.pmf(
@@ -860,10 +874,11 @@ class TestInsideAlgorithm(unittest.TestCase):
     def test_tree_with_unary_nodes(self):
         ts = utility_functions.single_tree_ts_with_unary()
         algo = self.run_inside_algorithm(ts, 'gamma')[0]
+        self.assertTrue(np.allclose(algo.inside[7], np.array([0, 1, 0.25406637])))
+        self.assertTrue(np.allclose(algo.inside[6], np.array([0, 1, 0.07506923])))
+        self.assertTrue(np.allclose(algo.inside[5], np.array([0, 1, 0.13189998])))
+        self.assertTrue(np.allclose(algo.inside[4], np.array([0, 1, 0.07370801])))
         self.assertTrue(np.allclose(algo.inside[3], np.array([0, 1, 0.01147716])))
-        self.assertTrue(np.allclose(algo.inside[4], np.array([0, 1, 0.12086781])))
-        self.assertTrue(np.allclose(algo.inside[5], np.array([0, 1, 0.07506923])))
-        self.assertTrue(np.allclose(algo.inside[6], np.array([0, 1, 0.25057244])))
 
     def test_two_tree_mutation_ts(self):
         ts = utility_functions.two_tree_mutation_ts()
@@ -876,6 +891,17 @@ class TestInsideAlgorithm(unittest.TestCase):
         # NB the replacement below has not been hand-calculated
         self.assertTrue(np.allclose(algo.inside[5], np.array([0, 7.06320034e-11, 1])))
 
+    def test_dangling_fails(self):
+        ts = utility_functions.single_tree_ts_n3_dangling()
+        print(ts.draw_text())
+        print("Samples:", ts.samples())
+        priors = tsdate.build_prior_grid(ts, timepoints=np.array([0, 1.2, 2]))
+        theta = 1
+        eps = 1e-6
+        lls = Likelihoods(ts, priors.timepoints, theta, eps)
+        algo = InOutAlgorithms(priors, lls)
+        self.assertRaisesRegexp(ValueError, "dangling", algo.inside_pass)
+
 
 class TestOutsideAlgorithm(unittest.TestCase):
     def run_outside_algorithm(self, ts, prior_distr="lognorm"):
@@ -883,18 +909,15 @@ class TestOutsideAlgorithm(unittest.TestCase):
         priors = ConditionalCoalescentTimes(None, prior_distr)
         priors.add(ts.num_samples, approximate=False)
         grid = np.array([0, 1.2, 2])
-        mixture_prior = priors.get_mixture_prior_params(span_data)
-        nodes_to_date = span_data.nodes_to_date
-        prior_vals = fill_prior(
-            mixture_prior, grid, ts, nodes_to_date, prior_distr)
+        mixture_priors = priors.get_mixture_prior_params(span_data)
+        prior_vals = fill_priors(mixture_priors, grid, ts, prior_distr=prior_distr)
         theta = 1
-        rho = None
         eps = 1e-6
-        lls = Likelihoods(ts, grid, theta, eps)
+        lls = Likelihoods(ts, grid, theta, eps=eps)
         lls.precalculate_mutation_likelihoods()
-        algo = InOutAlgorithms(ts, prior_vals, lls)
-        algo.inside_pass(theta, rho)
-        algo.outside_pass(theta, rho, normalize=False)
+        algo = InOutAlgorithms(prior_vals, lls)
+        algo.inside_pass()
+        algo.outside_pass(normalize=False)
         return algo
 
     def test_one_tree_n2(self):
@@ -931,13 +954,12 @@ class TestOutsideAlgorithm(unittest.TestCase):
 
     def test_outside_before_inside_fails(self):
         ts = utility_functions.single_tree_ts_n2()
-        prior = tsdate.build_prior_grid(ts)
+        priors = tsdate.build_prior_grid(ts)
         theta = 1
-        rho = None
-        lls = Likelihoods(ts, prior.timepoints, theta)
+        lls = Likelihoods(ts, priors.timepoints, theta)
         lls.precalculate_mutation_likelihoods()
-        algo = InOutAlgorithms(ts, prior, lls)
-        self.assertRaises(RuntimeError, algo.outside_pass, theta, rho)
+        algo = InOutAlgorithms(priors, lls)
+        self.assertRaises(RuntimeError, algo.outside_pass)
 
 
 class TestTotalFunctionalValueTree(unittest.TestCase):
@@ -952,20 +974,15 @@ class TestTotalFunctionalValueTree(unittest.TestCase):
         priors = ConditionalCoalescentTimes(None, prior_distr=prior_distr)
         priors.add(ts.num_samples, approximate=False)
         grid = np.array([0, 1.2, 2])
-        mixture_prior = priors.get_mixture_prior_params(span_data)
-        nodes_to_date = span_data.nodes_to_date
-        prior_vals = fill_prior(
-            mixture_prior, grid, ts, nodes_to_date, prior_distr=prior_distr)
+        mixture_priors = priors.get_mixture_prior_params(span_data)
+        prior_vals = fill_priors(mixture_priors, grid, ts, prior_distr=prior_distr)
         theta = 1
-        rho = None
         eps = 1e-6
-        lls = Likelihoods(ts, grid, theta, eps)
+        lls = Likelihoods(ts, grid, theta, eps=eps)
         lls.precalculate_mutation_likelihoods()
-        algo = InOutAlgorithms(ts, prior_vals, lls)
-        algo.inside_pass(theta, rho)
-        posterior = algo.outside_pass(theta, rho, normalize=False)
-        print(np.sum(
-            algo.inside.grid_data * algo.outside.grid_data, axis=1))
+        algo = InOutAlgorithms(prior_vals, lls)
+        algo.inside_pass()
+        posterior = algo.outside_pass(normalize=False)
         self.assertTrue(np.array_equal(np.sum(
             algo.inside.grid_data * algo.outside.grid_data, axis=1),
             np.sum(algo.inside.grid_data * algo.outside.grid_data, axis=1)))
@@ -1019,19 +1036,16 @@ class TestGilTree(unittest.TestCase):
             priors.add(ts.num_samples, approximate=False)
             grid = np.array([0, 0.1, 0.2, 0.5, 1, 2, 5])
             mixture_prior = priors.get_mixture_prior_params(span_data)
-            nodes_to_date = span_data.nodes_to_date
-            prior_vals = fill_prior(
-                mixture_prior, grid, ts, nodes_to_date, prior_distr)
+            prior_vals = fill_priors(mixture_prior, grid, ts, prior_distr=prior_distr)
             prior_vals.grid_data[0] = [0, 0.5, 0.3, 0.1, 0.05, 0.02, 0.03]
             prior_vals.grid_data[1] = [0, 0.05, 0.1, 0.2, 0.45, 0.1, 0.1]
             theta = 2
-            rho = None
             eps = 0.01
-            lls = Likelihoods(ts, grid, theta, eps, normalize=False)
+            lls = Likelihoods(ts, grid, theta, eps=eps, normalize=False)
             lls.precalculate_mutation_likelihoods()
-            algo = InOutAlgorithms(ts, prior_vals, lls)
-            algo.inside_pass(theta, rho, normalize=False, cache_inside=cache_inside)
-            algo.outside_pass(theta, rho, normalize=False)
+            algo = InOutAlgorithms(prior_vals, lls)
+            algo.inside_pass(normalize=False, cache_inside=cache_inside)
+            algo.outside_pass(normalize=False)
             self.assertTrue(
                 np.allclose(np.sum(algo.inside.grid_data * algo.outside.grid_data,
                                    axis=1), [7.44449E-05, 7.44449E-05]))
@@ -1040,20 +1054,85 @@ class TestGilTree(unittest.TestCase):
                                    axis=1), np.sum(algo.inside.grid_data[-1])))
 
 
+class TestOutsideEdgesOrdering(unittest.TestCase):
+    """
+    Test that edges_by_child_desc() and edges_by_child_then_parent_desc() order edges
+    correctly.
+    """
+
+    def edges_ordering(self, ts, fn):
+        fixed_nodes = set(ts.samples())
+        priors = tsdate.build_prior_grid(ts)
+        theta = None
+        liklhd = LogLikelihoods(ts, priors.timepoints, theta,
+                                eps=1e-6, fixed_node_set=fixed_nodes, progress=False)
+        dynamic_prog = InOutAlgorithms(priors, liklhd, progress=False)
+        if fn == "outside_pass":
+            edges_by_child = dynamic_prog.edges_by_child_desc()
+            seen_children = list()
+            last_child_time = None
+
+            for child, edges in edges_by_child:
+                for edge in edges:
+                    self.assertTrue(edge.child not in seen_children)
+                cur_child_time = ts.tables.nodes.time[child]
+                if last_child_time:
+                    self.assertTrue(cur_child_time <= last_child_time)
+                seen_children.append(child)
+                last_child_time = ts.tables.nodes.time[child]
+        elif fn == "outside_maximization":
+            edges_by_child = dynamic_prog.edges_by_child_then_parent_desc()
+            seen_children = list()
+            last_child_time = None
+
+            for child, edges in edges_by_child:
+                last_parent_time = None
+                for edge in edges:
+                    cur_parent_time = ts.tables.nodes.time[edge.parent]
+                    if last_parent_time:
+                        self.assertTrue(cur_parent_time >= last_parent_time)
+                    last_parent_time = cur_parent_time
+                self.assertTrue(child not in seen_children)
+                cur_child_time = ts.tables.nodes.time[child]
+                if last_child_time:
+                    self.assertTrue(cur_child_time <= last_child_time)
+
+                seen_children.append(child)
+                last_child_time = ts.tables.nodes.time[child]
+
+    def test_two_tree_outside_traversal(self):
+        """
+        This is for the outside algorithm, where we simply want to traverse the ts
+        from oldest child nodes to youngest, grouping all child nodes of same id
+        together. In the outside maximization algorithm, we want to traverse the ts from
+        oldest child nodes to youngest, grouping all child nodes of same id together.
+        """
+        ts = utility_functions.two_tree_two_mrcas()
+        self.edges_ordering(ts, "outside_pass")
+        self.edges_ordering(ts, "outside_maximization")
+
+    def test_simulated_inferred_outside_traversal(self):
+        ts = msprime.simulate(500, Ne=10000, length=5e4, mutation_rate=1e-8,
+                              recombination_rate=1e-8, random_seed=12)
+        sample_data = tsinfer.SampleData.from_tree_sequence(ts, use_times=False)
+        inferred_ts = tsinfer.infer(sample_data)
+        self.edges_ordering(inferred_ts, "outside_pass")
+        self.edges_ordering(inferred_ts, "outside_maximization")
+
+
 class TestMaximization(unittest.TestCase):
     """
-    Test the downward maximization function
+    Test the outside maximization function
     """
     def run_outside_maximization(self, ts, prior_distr="lognorm"):
-        prior = tsdate.build_prior_grid(ts, prior_distribution=prior_distr)
+        priors = tsdate.build_prior_grid(ts, prior_distribution=prior_distr)
         theta = 1
-        rho = None
         eps = 1e-6
-        lls = Likelihoods(ts, prior.timepoints, theta, eps)
+        lls = Likelihoods(ts, priors.timepoints, theta, eps=eps)
         lls.precalculate_mutation_likelihoods()
-        algo = InOutAlgorithms(ts, prior, lls)
-        algo.inside_pass(theta, rho)
-        return lls, algo, algo.outside_maximization(theta)
+        algo = InOutAlgorithms(priors, lls)
+        algo.inside_pass()
+        return lls, algo, algo.outside_maximization()
 
     def test_one_tree_n2(self):
         ts = utility_functions.single_tree_ts_n2()
@@ -1125,19 +1204,16 @@ class TestBuildPriorGrid(unittest.TestCase):
     """
     Test tsdate.build_prior_grid() works as expected
     """
-    def test_build_prior_grid_input(self):
-        ts = msprime.simulate(2)
-        self.assertRaises(ValueError, tsdate.build_prior_grid, ts, timepoints=-1)
-        self.assertRaises(ValueError, tsdate.build_prior_grid, ts,
-                          timepoints=np.array([1]))
-        self.assertRaises(ValueError, tsdate.build_prior_grid, ts,
-                          timepoints=np.array([-1, 2, 3]))
-        self.assertRaises(TypeError, tsdate.build_prior_grid, ts,
-                          timepoints=np.array(["hello", "there"]))
-        self.assertRaises(ValueError, tsdate.build_prior_grid, ts,
-                          timepoints=np.array([1, 1, 1]))
-        self.assertRaises(ValueError, tsdate.build_prior_grid, ts,
-                          timepoints="foobar")
+    def test_bad_timepoints(self):
+        ts = msprime.simulate(2, random_seed=123)
+        for bad in [-1, np.array([1]), np.array([-1, 2, 3]), np.array([1, 1, 1]),
+                    "foobar"]:
+            self.assertRaises(ValueError, tsdate.build_prior_grid, ts, timepoints=bad)
+        for bad in [np.array(["hello", "there"])]:
+            self.assertRaises(TypeError, tsdate.build_prior_grid, ts, timepoints=bad)
+
+    def test_bad_prior_distr(self):
+        ts = msprime.simulate(2, random_seed=12)
         self.assertRaises(ValueError, tsdate.build_prior_grid, ts,
                           prior_distribution="foobar")
 

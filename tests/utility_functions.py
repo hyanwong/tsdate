@@ -316,12 +316,15 @@ def two_tree_ts():
 def single_tree_ts_with_unary():
     r"""
     Simple case where we have n = 3 and some unary nodes.
-            6
-           / 5
-          4   \
-          3    \
-         / \    \
-        0   1    2
+            7
+           / \
+          5   \
+          |    \
+          4     6
+          |     |
+          3     |
+         / \    |
+        0   1   2
     """
     nodes = io.StringIO("""\
     id      is_sample   time
@@ -331,14 +334,16 @@ def single_tree_ts_with_unary():
     3       0           1
     4       0           2
     5       0           3
-    6       0           4
+    6       0           2
+    7       0           4
     """)
     edges = io.StringIO("""\
     left    right   parent  child
     0       1       3       0,1
-    0       1       5       2
+    0       1       6       2
     0       1       4       3
-    0       1       6       4,5
+    0       1       5       4
+    0       1       7       5,6
     """)
     return tskit.load_text(nodes=nodes, edges=edges, strict=False)
 
@@ -388,6 +393,44 @@ def two_tree_mutation_ts():
     """)
     return tskit.load_text(nodes=nodes, edges=edges, sites=sites,
                            mutations=mutations, strict=False)
+
+
+def two_tree_two_mrcas():
+    r"""
+    Simple case where we have n = 4, 2 trees.
+             6             |
+            / \            |            7
+           /   \           |           / \
+          /     \          |          /   \
+         /       \         |         /     \
+        /         \        |        /       \
+       4           5       |       4         5
+      / \         / \      |      / \       / \
+     /   \       /   \     |     /   \     /   \
+    |     |     |     |    |    |     |   |     |
+    0     1     2     3    |    0     1   2     3
+    """
+    nodes = io.StringIO("""\
+    id      is_sample   time
+    0       1           0
+    1       1           0
+    2       1           0
+    3       1           0
+    4       1           1
+    5       0           1
+    6       0           3
+    7       0           2
+    """)
+    edges = io.StringIO("""\
+    left    right   parent  child
+    0       1       4       0,1
+    0       1       5       2,3
+    0       0.3     6       4
+    0       0.3     6       5
+    0.3     1       7       4
+    0.3     1       7       5
+    """)
+    return tskit.load_text(nodes=nodes, edges=edges, strict=False)
 
 
 def loopy_tree():
@@ -454,6 +497,16 @@ def single_tree_ts_n3_sample_as_parent():
     0       1       4       2,3
     """)
     return tskit.load_text(nodes=nodes, edges=edges, strict=False)
+
+
+def single_tree_ts_n3_dangling():
+    # Mark node 0 as a non-sample node, which should make it dangling
+    ts = single_tree_ts_n3()
+    tables = ts.dump_tables()
+    flags = tables.nodes.flags
+    flags[0] = flags[0] & (~tskit.NODE_IS_SAMPLE)
+    tables.nodes.flags = flags
+    return tables.tree_sequence()
 
 
 def truncate_ts_samples(ts, average_span, random_seed, min_span=5):

@@ -4,14 +4,29 @@
 # list see the documentation:
 # http://www.sphinx-doc.org/en/master/config
 
+
+from unittest.mock import MagicMock
+import os
+import sys
+import pkg_resources
+
+class Mock(MagicMock):
+    @classmethod
+    def __getattr__(cls, name):
+        return MagicMock()
+
+MOCK_MODULES = [
+    'numpy', 'tskit', 'tqdm', 'appdirs', 'numba', 'scipy', 'scipy.stats', 'scipy.special'
+]
+sys.modules.update((mod_name, Mock()) for mod_name in MOCK_MODULES)
+
 # -- Path setup --------------------------------------------------------------
 
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 #
-import os
-import sys
+
 sys.path.insert(0, os.path.abspath('..'))
 
 # The master document
@@ -24,7 +39,13 @@ copyright = '2020, University of Oxford'
 author = 'Anthony Wilder Wohns and Yan Wong'
 
 # The full version, including alpha/beta/rc tags
-release = '1.0.0'
+try:
+    from setuptools_scm import get_version
+    release = get_version(root='..', relative_to=__file__)
+    version = release[:3]
+except pkg_resources.DistributionNotFound:
+    release = "0.0.0"
+    version = "0.0.0"
 
 
 # -- General configuration ---------------------------------------------------
@@ -62,7 +83,7 @@ html_theme = 'alabaster'
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-html_static_path = ['_static']
+html_static_path = []
 
 # -- Extension configuration -------------------------------------------------
 
@@ -72,5 +93,5 @@ html_static_path = ['_static']
 intersphinx_mapping = {
     'https://docs.python.org/': None,
     'https://docs.scipy.org/doc/numpy/': None,
-    'https://tskit.readthedocs.io/en/stable/': None,
+    'https://tsdate.readthedocs.io/en/stable/': None,
 }

@@ -12,6 +12,7 @@ setup(
     packages=["tsdate"],
     long_description_content_type="text/markdown",
     url="http://pypi.python.org/pypi/tsdate",
+    python_requires='>=3.4',
     entry_points={
         'console_scripts': [
             'tsdate=tsdate.__main__:main',
@@ -23,7 +24,8 @@ setup(
         "tskit>=0.2.3",
         "scipy>1.2.3",
         "numba>=0.46.0",
-        "tqdm"
+        "tqdm",
+        "appdirs"
     ],
     project_urls={
         'Source': 'https://github.com/awohns/tsdate',

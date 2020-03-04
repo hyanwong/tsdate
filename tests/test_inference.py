@@ -30,13 +30,34 @@ import msprime
 import tsinfer
 
 import tsdate
-import utility_functions
+from tests import utility_functions
+from tsdate.base import LOG, LIN
 
 
-# class TestPrebuilt(unittest.TestCase):
-#     """
-#     Tests for tsdate on prebuilt tree sequences
-#     """
+class TestPrebuilt(unittest.TestCase):
+    """
+    Tests for tsdate on prebuilt tree sequences
+    """
+    def test_dangling_failure(self):
+        ts = utility_functions.single_tree_ts_n3_dangling()
+        self.assertRaisesRegexp(ValueError, "dangling", tsdate.date, ts, Ne=1)
+
+    def test_unary_warning(self):
+        with self.assertLogs(level="WARNING") as log:
+            tsdate.date(utility_functions.single_tree_ts_with_unary(), Ne=1)
+            self.assertEqual(len(log.output), 1)
+            self.assertIn("unary nodes", log.output[0])
+
+    def test_fails_with_recombination(self):
+        ts = utility_functions.two_tree_mutation_ts()
+        for probability_space in (LOG, LIN):
+            self.assertRaises(
+                NotImplementedError, tsdate.date, ts, Ne=1, recombination_rate=1,
+                probability_space=probability_space)
+            self.assertRaises(
+                NotImplementedError, tsdate.date, ts, Ne=1, recombination_rate=1,
+                probability_space=probability_space, mutation_rate=1)
+
 #     def test_simple_ts_n2(self):
 #         ts = utility_functions.single_tree_ts_n2()
 #         dated_ts = tsdate.date(ts, Ne=10000)
@@ -147,11 +168,11 @@ class TestSimulated(unittest.TestCase):
         ts = msprime.simulate(
             sample_size=10, length=2e6, Ne=10000, mutation_rate=1e-8,
             recombination_rate=1e-8, random_seed=11)
-        prior = tsdate.build_prior_grid(ts, timepoints=10, approximate_prior=None)
-        dated_ts = tsdate.date(ts, Ne=10000, mutation_rate=1e-8, prior=prior,
-                               probability_space="linear")
-        maximized_ts = tsdate.date(ts, Ne=10000, mutation_rate=1e-8, prior=prior,
-                                   method='maximization', probability_space="linear")
+        priors = tsdate.build_prior_grid(ts, timepoints=10, approximate_priors=None)
+        dated_ts = tsdate.date(ts, Ne=10000, mutation_rate=1e-8, priors=priors,
+                               probability_space=LIN)
+        maximized_ts = tsdate.date(ts, Ne=10000, mutation_rate=1e-8, priors=priors,
+                                   method='maximization', probability_space=LIN)
         self.ts_equal_except_times(ts, dated_ts)
         self.ts_equal_except_times(ts, maximized_ts)
 
@@ -175,11 +196,11 @@ class TestSimulated(unittest.TestCase):
                 if not internal_edge_removed:
                     continue
             tables.edges.add_row(*row)
-        multi_root_ts = tables.tree_sequence()
-        good_prior = tsdate.build_prior_grid(ts)
-        self.assertRaises(ValueError, tsdate.build_prior_grid, multi_root_ts)
-        self.assertRaises(ValueError, tsdate.date, multi_root_ts, 1, 2)
-        self.assertRaises(ValueError, tsdate.date, multi_root_ts, 1, 2, None, good_prior)
+        multiroot_ts = tables.tree_sequence()
+        good_priors = tsdate.build_prior_grid(ts)
+        self.assertRaises(ValueError, tsdate.build_prior_grid, multiroot_ts)
+        self.assertRaises(ValueError, tsdate.date, multiroot_ts, 1, 2)
+        self.assertRaises(ValueError, tsdate.date, multiroot_ts, 1, 2, None, good_priors)
 
     def test_non_contemporaneous(self):
         samples = [
