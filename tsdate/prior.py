@@ -491,8 +491,8 @@ class SpansBySamples:
     def first_pass(self):
         """
         Returns a tuple of the span that each node covers, a list of the tree indices of
-        trees that have undated nodes (used to quickly revist these trees later), and the
-        number of valid samples (tips) in each tree.
+        trees that have undated nodes (used to quickly revisit these trees later), and
+        the number of valid samples (tips) in each tree.
         """
         # The following 3 variables will be returned by this function
         node_spans = np.zeros(self.ts.num_nodes)
