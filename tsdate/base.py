@@ -154,6 +154,34 @@ class NodeGridValues:
         assert not np.any(self.grid_data < 0)
         self.grid_data = self.grid_data / self.grid_data.sum(axis=1)[:, np.newaxis]
 
+    def means(self, Ne):
+        """
+        Return the mean value for each node. Note that the timeslices are open-ended
+        so that the last timeslice goes from timepoints[-1] ... infinity. This means
+        we cannot take the midpoint of the last category. Instead, we can assume
+        that the highest category fits a negative exponential distribution (as expected
+        from coalescent theory). The top end of the distribution contains a mass p of
+        _a_∫∞ (exp(-x/2Ne) dx = exp(-a/2Ne), so that _a_ = -2Ne*log(p). The mean is at
+        a∫∞ (exp(-x/2Ne) x dx; substituting _a_ gives 2Ne p * (1 - log(p)) for the
+        missing
+        """
+        if self.probability_space != LIN:
+            raise NotImplementedError("Can only calculate means in linear space")
+        means = np.full(self.num_nodes, 0)
+        probs = self.grid_data / self.grid_data.sum(axis=1)[:, np.newaxis]
+        last_prob = probs[:, -1]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            last_slice_contribs = np.where(
+                last_prob == 0, 0, 2 * Ne * last_prob * (1 - np.log(last_prob))
+            )
+        midpoints = (self.timepoints[1:] + self.timepoints[:-1]) / 2
+        for n, prob, extra in zip(self.nonfixed_nodes, probs, last_slice_contribs):
+            means[n] = np.sum(midpoints * prob[:-1]) + extra
+        means[
+            np.logical_not(np.isin(np.arange(self.num_nodes), self.nonfixed_nodes))
+        ] = self.fixed_data
+        return means
+
     def __getitem__(self, node_id):
         index = self.row_lookup[node_id]
         if index < 0:
