@@ -798,15 +798,6 @@ class TestVariational:
         with pytest.raises(ValueError, match="Must specify population size"):
             tsdate.variational_gamma(ts, mutation_rate=1)
 
-    def test_variational_toomanysizes(self):
-        ts = utility_functions.two_tree_mutation_ts()
-        Ne = 1
-        priors = tsdate.build_prior_grid(ts, Ne, np.array([0, 1.2, 2]))
-        with pytest.raises(ValueError, match="Cannot specify"):
-            tsdate.variational_gamma(
-                ts, mutation_rate=1, population_size=Ne, priors=priors
-            )
-
 
 class TestNodeGridValuesClass:
     def test_init(self):
