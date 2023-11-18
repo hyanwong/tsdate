@@ -24,6 +24,10 @@
 
 **Features**
 
+- A radically faster recursive approach is used for calculating the conditional coalescent
+  prior. Approximations for the single-tree prior are now only needed for dating
+  tree sequences with >10000 tips.
+
 - A new continuous-time method, `"variational_gamma"` has been introduced, which
   uses an iterative expectation propagation approach. Tests show this
   increases accuracy, especially at older times, although the current implementation
