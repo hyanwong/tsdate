@@ -54,7 +54,7 @@ ax.annotate(
   "bottleneck",
   xy=(0, bottleneck_time),
   xytext=(1e4, bottleneck_time * 1.04),
-  arrowprops=dict(arrowstyle="->"))
+  arrowprops=dict(arrowstyle="->"));
 ```
 
 To test how well tsdate does in this situation, we can redate the known (true) tree sequence topology,
@@ -153,7 +153,7 @@ In the example above, in the absence of an expected effective population size fo
 is to use the (sitewise) genetic diversity divided by four-times the mutation rate:
 
 ```{code-cell} ipython3
-print("A rough estimate of the effective population size is", ts.diversity() / (4 * 1e-6))
+print("A rough estimate of the effective population size is", ts.diversity() / (4 * mutation_rate))
 ```
 
 
