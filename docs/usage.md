@@ -283,14 +283,14 @@ has not been parallelised to allow running on many CPU cores.
 #### Continuous time optimisations
 
 The [expectation progagation](sec_methods_expectation_propagation) approach
-in the `variational_gamma` method involves iteratively refining the
+in the `variational_gamma` {ref}`method<sec_methods>` involves iteratively refining the
 local time estimates. The number of rounds of iteration can be
 set via the `max_iterations` parameter. Reducing this will speed up _tsdate_
 inference, but may produce worse date estimation. Future updates to _tsdate_ may
 optimise this so that iterations are halted after an appropriate convergence criterion
 has been reached.
 
-#### Continuous time optimisations
+#### Discrete time optimisations
 
 If the {ref}`method<sec_methods>` used for dating involves discrete time slices, _tsdate_ scales
 quadratically in the number of time slices chosen. For greater temporal resolution,
