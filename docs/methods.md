@@ -128,7 +128,11 @@ user-provided mutation rate. The number of intervals can be specified using the
 dates may be inaccurately estimated if the dataset comes from a set of samples with a complex
 demographic history.
 
-TODO: describe the rescaling step in more detail. Could also link to [the population size docs](sec_popsize)
+:::{todo}
+Describe the rescaling step in more detail. Could also link to [the population size docs](sec_popsize).
+Point out that because we base the rescaling on path lengths, this method gives accurate mutation
+and node time estimates where there are polytomies, although this means that the path lengths
+between samples (and the AFS) can be biased compared to a strictly bifurcating equivalent.
 
 
 
