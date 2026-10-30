@@ -185,6 +185,7 @@ class TestSplitDisjointNodes:
         split_ts = tsdate.util.split_disjoint_nodes(ts, record_provenance=True)
         assert split_ts.num_provenances == ts.num_provenances + 1
 
+    @utility_functions.needs_tsinfer
     def test_inferred(self):
         ts = msprime.sim_ancestry(
             10,
@@ -464,6 +465,7 @@ class TestPreprocessTs:
 
 
 class TestUnaryNodeCheck:
+    @utility_functions.needs_tsinfer
     def test_inferred(self):
         ts = msprime.sim_ancestry(
             10,
@@ -503,6 +505,7 @@ class TestInferencePipeline:
     Test that tsinfer->preprocess_ts->tsdate runs through
     """
 
+    @utility_functions.needs_tsinfer
     def test_inference_pipeline(self):
         ts = msprime.sim_ancestry(
             10,

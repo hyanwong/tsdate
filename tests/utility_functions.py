@@ -25,12 +25,20 @@ A collection of utilities to edit and construct tree sequences for testing purpo
 
 import io
 import itertools
+import sys
 
 import msprime
 import numpy as np
+import pytest
 import tskit
 from scipy.special import comb
 from tqdm import tqdm
+
+# tsinfer 0.5.x calls ndarray.resize without refcheck=False, which raises on Python
+# >= 3.14. Remove when the tests move to tsinfer 1.0 (VariantData via bio2zarr).
+TSINFER_BROKEN = sys.version_info >= (3, 14)
+TSINFER_BROKEN_REASON = "tsinfer 0.5.x fails on Python >= 3.14 (ndarray.resize)"
+needs_tsinfer = pytest.mark.skipif(TSINFER_BROKEN, reason=TSINFER_BROKEN_REASON)
 
 
 def add_grand_mrca(ts):

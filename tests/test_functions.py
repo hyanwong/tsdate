@@ -1349,6 +1349,7 @@ class TestOutsideEdgesOrdering:
         self.edges_ordering(ts, "outside_pass")
         self.edges_ordering(ts, "outside_maximization")
 
+    @utility_functions.needs_tsinfer
     def test_simulated_inferred_outside_traversal(self):
         ts = msprime.simulate(
             500,
@@ -1635,6 +1636,7 @@ class TestConstrainAges:
             np.array([0.0, 0.0, 3.0, 4.0, 4.000001, 4.1]), constrained_ages
         )
 
+    @utility_functions.needs_tsinfer
     def test_constrain_ages_backcompat(self):
         """
         Test constrain ages (without least squares correction) against
@@ -1660,6 +1662,7 @@ class TestConstrainAges:
         constr_2 = constrain_ages(inf_ts, nodes_time, eps, 0)
         assert np.allclose(constr_1, constr_2, rtol=eps)
 
+    @utility_functions.needs_tsinfer
     def test_constrain_ages_leastsquare(self):
         """
         Test that constrain ages with least squares correction has positive
@@ -1886,6 +1889,7 @@ class TestSampleDataTimes:
     Test add_sampledata_times
     """
 
+    @utility_functions.needs_tsinfer
     def test_wrong_number_of_sites(self):
         ts = utility_functions.single_tree_ts_2mutations_n3()
         sites_time = tsdate.sites_time_from_ts(ts, unconstrained=False)
@@ -1894,6 +1898,7 @@ class TestSampleDataTimes:
         with pytest.raises(ValueError):
             tsdate.add_sampledata_times(samples, sites_time)
 
+    @utility_functions.needs_tsinfer
     def test_historical_samples(self):
         samples = [msprime.Sample(population=0, time=0) for i in range(10)]
         ancients = [msprime.Sample(population=0, time=1000) for i in range(10)]
@@ -1927,6 +1932,7 @@ class TestSampleDataTimes:
                 ancient_bound = np.max(ancient_samples_times[variant.genotypes == 1])
                 assert dated_samples.sites_time[variant.site.id] >= ancient_bound
 
+    @utility_functions.needs_tsinfer
     def test_sampledata(self):
         samples = [msprime.Sample(population=0, time=0) for i in range(10)]
         ancients = [msprime.Sample(population=0, time=1000) for i in range(10)]
@@ -1961,6 +1967,7 @@ class TestHistoricalExample:
             samples=samples, mutation_rate=1, length=1e2, random_seed=12
         )
 
+    @utility_functions.needs_tsinfer
     def test_historical_samples(self):
         ts = self.historical_samples_example()
         modern_samples = tsinfer.SampleData.from_tree_sequence(

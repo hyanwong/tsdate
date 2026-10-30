@@ -30,6 +30,7 @@ import numpy as np
 import pytest
 import tsinfer
 import tskit
+import utility_functions
 
 import tsdate
 from tsdate.phasing import (
@@ -43,6 +44,8 @@ from tsdate.phasing import (
 
 @pytest.fixture(scope="session")
 def inferred_ts():
+    if utility_functions.TSINFER_BROKEN:
+        pytest.skip(utility_functions.TSINFER_BROKEN_REASON)
     ts = msprime.sim_ancestry(
         10,
         population_size=1e4,

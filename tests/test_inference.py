@@ -458,6 +458,7 @@ class TestInferred:
 
     @pytest.mark.parametrize("rho", [0, 5])
     @pytest.mark.parametrize("method", tsdate.estimation_methods.keys())
+    @util.needs_tsinfer
     def test_simple_sim(self, rho, method):
         ts = msprime.simulate(8, mutation_rate=5, recombination_rate=rho, random_seed=2)
         if rho != 0:
@@ -493,6 +494,7 @@ class TestVariational:
         pts = remove_edges(self.ts, unsupported_edges(self.ts)).simplify()
         tsdate.variational_gamma(pts, mutation_rate=1e-8)
 
+    @util.needs_tsinfer
     def test_inferred(self):
         its = tsinfer.infer(tsinfer.SampleData.from_tree_sequence(self.ts)).simplify()
         tsdate.variational_gamma(its, mutation_rate=1e-8)
