@@ -4,6 +4,7 @@
 
 In development
 
+- Python >= 3.12 is required; Python 3.14 and 3.15 are now supported.
 - `preprocess_ts` now always sorts the tree sequence, which may change the order
   of mutations
 
